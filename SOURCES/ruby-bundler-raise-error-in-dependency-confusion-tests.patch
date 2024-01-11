@@ -1,0 +1,266 @@
+diff --git a/spec/bundler/bundler/definition_dep_confusion_spec.rb b/spec/bundler/bundler/definition_dep_confusion_spec.rb
+new file mode 100644
+index 0000000000..9fee464960
+--- /dev/null
++++ b/spec/bundler/bundler/definition_dep_confusion_spec.rb
+@@ -0,0 +1,257 @@
++# frozen_string_literal: true
++
++require "bundler/definition"
++
++RSpec.describe Bundler::Definition do
++  before do
++    allow(Bundler::SharedHelpers).to receive(:find_gemfile) { Pathname.new("Gemfile") }
++  end
++
++  let(:sources) { Bundler::SourceList.new }
++  subject { Bundler::Definition.new(nil, [], sources, []) }
++
++  describe "#validate_dependency_confusion!" do
++    before do
++      subject.instance_variable_set(:@remote, remote)
++    end
++
++    context "when it's not remote" do
++      let(:remote) { false }
++
++      it "should neither raise an error nor warn" do
++        expect(subject).not_to receive(:raise_error_or_warn_dependency_confusion)
++        subject.send(:validate_dependency_confusion!)
++      end
++    end
++
++    context "when it's remote" do
++      before do
++        allow(sources).to receive(:non_global_rubygems_sources).and_return(non_global_rubygems_sources)
++      end
++
++      let(:remote) { true }
++
++      context "when the number of non-global source is zero" do
++        let(:non_global_rubygems_sources) { [] }
++
++        it "should neither raise an error nor warn" do
++          expect(subject).not_to receive(:raise_error_or_warn_dependency_confusion)
++          subject.send(:validate_dependency_confusion!)
++        end
++      end
++
++      context "when there are any non dependency API non global sources" do
++        let(:non_global_rubygems_sources) do
++          [
++            double("non-global-source-0", :dependency_api_available? => true, :to_s => "a"),
++            double("non-global-source-1", :dependency_api_available? => false, :to_s => "b"),
++            double("non-global-source-2", :dependency_api_available? => false, :to_s => "c"),
++          ]
++        end
++
++        it "should raise an error or warn" do
++          expect(subject).to receive(:raise_error_or_warn_dependency_confusion).with(<<-M.strip)
++Your Gemfile contains scoped sources that don't implement a dependency API, namely:
++
++  * b
++  * c
++
++Using the above gem servers may result in installing unexpected gems. To resolve this warning, make sure you use gem servers that implement dependency APIs, such as gemstash or geminabox gem servers.
++          M
++          subject.send(:validate_dependency_confusion!)
++        end
++      end
++
++      context "when all the non global sources implement dependency API" do
++        before do
++          allow(subject).to receive(:indirect_dependency_names_in_non_global_rubygems_soruces).and_return(indirect_dependency_names)
++          subject.instance_variable_set(:@index, index)
++        end
++
++        let(:non_global_rubygems_sources) do
++          [
++            double("non-global-source-0", :dependency_api_available? => true, :to_s => "a"),
++            double("non-global-source-1", :dependency_api_available? => true, :to_s => "b"),
++          ]
++        end
++
++        let(:index) { double("index", :sources => index_sources) }
++        let(:index_sources) do
++          [
++            double("index-source-1", :spec_names => ["a1", "a2"]),
++            double("index-source-2", :spec_names => ["a2", "b1", "b2"]),
++            double("index-source-3", :spec_names => ["b2"])
++          ]
++        end
++
++        context "when there is not an indirect dependency in the non global sources" do
++          let(:indirect_dependency_names) {[]}
++
++          it "should neither raise an error nor warn" do
++            expect(subject).not_to receive(:raise_error_or_warn_dependency_confusion)
++            subject.send(:validate_dependency_confusion!)
++          end
++        end
++
++        context "when there is an indirect dependency in the non global sources" do
++
++          context "when the indirect dependency doesn't exist in another source" do
++            let(:indirect_dependency_names) {["a1", "b1"]}
++
++            it "should neither raise an error nor warn" do
++              expect(subject).not_to receive(:raise_error_or_warn_dependency_confusion)
++              subject.send(:validate_dependency_confusion!)
++            end
++          end
++
++          context "when the indirect dependency also exists in anotehr source" do
++            let(:indirect_dependency_names) {["a1", "a2", "b2"]}
++
++            it "should raise an error or warn" do
++              expect(subject).to receive(:raise_error_or_warn_dependency_confusion).with(<<-M.strip)
++Your Gemfile contains implicit dependency gems a2, b2 on the scoped sources, namely:
++
++  * a
++  * b
++
++Using implicit dependency gems on the above sources may result in installing unexpected gems. To suppress this message, make sure you set the gems explicitly in the Gemfile.
++              M
++              subject.send(:validate_dependency_confusion!)
++            end
++          end
++        end
++      end
++    end
++  end
++
++  describe "#indirect_dependency_names_in_non_global_rubygems_soruces" do
++    before do
++      subject.instance_variable_set(:@dependencies, dependencies)
++      allow(sources).to receive(:non_global_rubygems_sources).and_return(non_global_rubygems_sources)
++    end
++
++    # Direct dependencies
++    let(:dependencies) do
++      [
++        double("dependency-0", :name => "g0"),
++        double("dependency-1", :name => "g3")
++      ]
++    end
++    let(:non_global_rubygems_sources) do
++      [
++        double("non-global-source-0", :specs => index_0, :to_s => "s0"),
++        double("non-global-source-1", :specs => index_1, :to_s => "s1"),
++      ]
++    end
++    let(:index_0) do
++      # All the dependencies in the source-0.
++      index = double("index-0", :dependency_names => ["g0", "g1", "g2", "g5"])
++      allow(index).to receive(:local_search) do |query|
++        return_map = {
++          "g1" => [double("spec", :class => Bundler::StubSpecification, :to_s => "g1")],
++          "g2" => [double("spec", :class => Bundler::EndpointSpecification, :to_s => "g2")],
++          "g5" => [double("spec", :class => Bundler::EndpointSpecification, :to_s => "g5")]
++        }
++        return_map[query]
++      end
++      index
++    end
++    let(:index_1) do
++      # All the dependencies in the source-1.
++      index = double("index-1", :dependency_names => ["g3", "g4", "g5"])
++      allow(index).to receive(:local_search) do |query|
++        return_map = {
++          "g4" => [double("spec", :class => Bundler::EndpointSpecification, :to_s => "g4")],
++          "g5" => [double("spec", :class => Bundler::EndpointSpecification, :to_s => "g5")]
++        }
++        return_map[query]
++      end
++      index
++    end
++
++    it "should return only indirect dependencies of endpoint specification" do
++      expect(subject.send(:indirect_dependency_names_in_non_global_rubygems_soruces)).to eq(["g2", "g4", "g5"])
++    end
++  end
++
++  describe "#raise_error_or_warn_dependency_confusion" do
++    before do
++      allow(subject).to receive(:warn_on_dependnecy_confusion?).and_return(warn_on_dependnecy_confusion)
++    end
++
++    context "when #warn_on_dependnecy_confusion? returns false" do
++      let(:warn_on_dependnecy_confusion) { false }
++
++      it "should raise an error" do
++        expect(Bundler.ui).not_to receive(:warn)
++        expect do
++          subject.send(:raise_error_or_warn_dependency_confusion, "This is a message.")
++        end.to raise_error(Bundler::SecurityError, "This is a message. " \
++          "Or set the environment variable BUNDLE_WARN_ON_DEPENDENCY_CONFUSION.")
++      end
++    end
++
++    context "when #warn_on_dependnecy_confusion? returns true" do
++      let(:warn_on_dependnecy_confusion) { true }
++
++      it "should warn" do
++        expect(Bundler.ui).to receive(:warn).with(<<-W.strip)
++This is a message.
++W
++        subject.send(:raise_error_or_warn_dependency_confusion, "This is a message.")
++      end
++    end
++  end
++
++  describe "#warn_on_dependnecy_confusion?" do
++    context "when BUNDLE_WARN_ON_DEPENDENCY_CONFUSION is set" do
++      it "should return true" do
++        with_env({"BUNDLE_WARN_ON_DEPENDENCY_CONFUSION" => "1"}) do
++          expect(subject.send(:warn_on_dependnecy_confusion?)).to be_truthy
++        end
++      end
++    end
++
++    context "when BUNDLE_WARN_ON_DEPENDENCY_CONFUSION is not set" do
++      it "should return false" do
++        with_env({"BUNDLE_WARN_ON_DEPENDENCY_CONFUSION" => nil}) do
++          expect(subject.send(:warn_on_dependnecy_confusion?)).to be_falsy
++        end
++      end
++    end
++  end
++
++  describe "#disable_dependency_confusion_check?" do
++    context "when BUNDLE_DISABLE_DEPENDENCY_CONFUSION_CHECK is set" do
++      it "should return true" do
++        with_env({"BUNDLE_DISABLE_DEPENDENCY_CONFUSION_CHECK" => "1"}) do
++          expect(subject.send(:disable_dependency_confusion_check?)).to be_truthy
++        end
++      end
++    end
++
++    context "when BUNDLE_DISABLE_DEPENDENCY_CONFUSION_CHECK is not set" do
++      it "should return false" do
++        with_env({"BUNDLE_DISABLE_DEPENDENCY_CONFUSION_CHECK" => nil}) do
++          expect(subject.send(:disable_dependency_confusion_check?)).to be_falsy
++        end
++      end
++    end
++  end
++
++  def with_env(env={})
++    begin
++      tmp_env = {}
++      env.each do |key, value|
++        tmp_env[key] = ENV.delete key
++        ENV[key] = value
++      end
++
++      yield
++    ensure
++      tmp_env.each do |key, value|
++        ENV[key] = value
++      end
++    end
++  end
++end
+-- 
+2.31.1
+

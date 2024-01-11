@@ -1,0 +1,156 @@
+diff --git a/lib/bundler/definition.rb b/lib/bundler/definition.rb
+index 8e56d4a9bc..c37946b46c 100644
+--- a/lib/bundler/definition.rb
++++ b/lib/bundler/definition.rb
+@@ -901,6 +901,8 @@ def source_requirements
+       # Load all specs from remote sources
+       index
+ 
++      validate_dependency_confusion! unless disable_dependency_confusion_check?
++
+       # Record the specs available in each gem's source, so that those
+       # specs will be available later when the resolver knows where to
+       # look for that gemspec (or its dependencies)
+@@ -980,5 +982,112 @@ def equivalent_rubygems_remotes?(source)
+ 
+       Bundler.settings[:allow_deployment_source_credential_changes] && source.equivalent_remotes?(sources.rubygems_remotes)
+     end
++
++    def validate_dependency_confusion!
++      # Continue if there is a scoped repository in the remote case.
++      return unless @remote && sources.non_global_rubygems_sources.size > 0
++
++      # Raise an error unless all the scope repositories implement the dependency API.
++      # When there is a non-dependency API scoped repository, we cannot get
++      # indirect dependencies used in a `Gemfile`.
++      unless sources.non_global_rubygems_sources.all?(&:dependency_api_available?)
++        non_api_sources = sources.non_global_rubygems_sources.reject(&:dependency_api_available?)
++        non_api_source_names_str = non_api_sources.map {|d| "  * #{d}" }.join("\n")
++
++        msg = String.new
++        msg << "Your Gemfile contains scoped sources that don't implement a dependency API, namely:\n\n"
++        msg << non_api_source_names_str
++        msg << "\n\nUsing the above gem servers may result in installing unexpected gems. " \
++          "To resolve this warning, make sure you use gem servers that implement dependency APIs, " \
++          "such as gemstash or geminabox gem servers."
++        raise_error_or_warn_dependency_confusion(msg)
++        return
++      end
++
++      indirect_dep_names = indirect_dependency_names_in_non_global_rubygems_soruces
++      # Get all the gem names from the index made from the default source.
++      # default_source_dep_names = @index.sources.select(&:default_source_used?).map(&:spec_names).flatten
++      # Get all the gem names from each source.
++      all_spec_names_list = @index.sources.map(&:spec_names)
++
++      # Only include the indirect dependency gems on the scoped sources that
++      # also exist on another source. The gems are included in more than 2
++      # sources (the own source + another source). If the gems don't exist on
++      # the another source, the dependency confusion doesn't happen.
++      indirect_dep_names.select! do |name|
++        source_num = all_spec_names_list.select {|all_names| all_names.include?(name) }
++        source_num.size >= 2
++      end
++
++      # Raise an error if there is an indirect dependency.
++      if indirect_dep_names.size > 0
++        dep_names_str = indirect_dep_names.join(", ")
++        source_names_str = sources.non_global_rubygems_sources.map {|d| "  * #{d}" }.join("\n")
++
++        msg = String.new
++        msg << "Your Gemfile contains implicit dependency gems #{dep_names_str} on the scoped sources, namely:\n\n"
++        msg << source_names_str
++        msg << "\n\nUsing implicit dependency gems on the above sources may result in installing unexpected gems. "
++        msg << "To suppress this message, make sure you set the gems explicitly in the Gemfile."
++        raise_error_or_warn_dependency_confusion(msg)
++        return
++      end
++    end
++
++    def raise_error_or_warn_dependency_confusion(msg)
++      if warn_on_dependnecy_confusion?
++        Bundler.ui.warn msg
++      else
++        msg = "#{msg} Or set the environment variable BUNDLE_WARN_ON_DEPENDENCY_CONFUSION."
++        raise SecurityError, msg
++      end
++    end
++
++    def indirect_dependency_names_in_non_global_rubygems_soruces
++      # Indirect dependency gem names
++      indirect_dep_names = []
++      # Direct dependency gem names
++      direct_dep_names = @dependencies.map(&:name)
++
++      sources.non_global_rubygems_sources.each do |s|
++        # If the non dependency API source is used, the `dependency_names`
++        # returns gems not only used in the `Gemfile`, but also returns ones
++        # existing in the scoped source too. This method shouldn't be used with
++        # the non dependency API sources.
++        s.specs.dependency_names.each do |dep_name|
++          # Exclude direct dependency gems.
++          next if direct_dep_names.include?(dep_name)
++
++          s.specs.local_search(dep_name).each do |spec|
++            # Debug gems with unexpected `spec.class`.
++            Bundler.ui.debug "Found dependency gem #{dep_name} (#{spec.class}) in scoped sources."
++            # StubSpecification extending RemoteSpecification: the gems by
++            #   `gem list`. Exclude the gems.
++            # EndpointSpecification: gems returned by dependency API such as
++            #   geminabox
++            # RemoteSpecification: gems returned by non dependency API such as
++            #   gem server. This method cannot be executed with the non
++            #   dependency API sources.
++            indirect_dep_names << dep_name if spec.class == EndpointSpecification
++          end
++        end
++      end
++
++      indirect_dep_names.sort.uniq
++    end
++
++    # Print a warning instead of raising an error when this option is enabled.
++    # Don't use Bundler.settings to minimize the difference to backport easily
++    # and avoid additional tests.
++    def warn_on_dependnecy_confusion?
++      @warn_on_dependnecy_confusion ||= ENV["BUNDLE_WARN_ON_DEPENDENCY_CONFUSION"]
++    end
++
++    # Disable the dependency confusion check when this option is enabled.
++    # The option can be used as a workaround if the check logic is problematic
++    # in a case such as a performance issue.
++    def disable_dependency_confusion_check?
++      @disable_dependnecy_confusion_check ||= ENV["BUNDLE_DISABLE_DEPENDENCY_CONFUSION_CHECK"]
++    end
+   end
+ end
+diff --git a/lib/bundler/source/rubygems.rb b/lib/bundler/source/rubygems.rb
+index 485b388a32..48a2ab736b 100644
+--- a/lib/bundler/source/rubygems.rb
++++ b/lib/bundler/source/rubygems.rb
+@@ -287,6 +287,10 @@ def dependency_names_to_double_check
+         names
+       end
+ 
++      def dependency_api_available?
++        api_fetchers.any?
++      end
++
+     protected
+ 
+       def credless_remotes
+diff --git a/lib/bundler/source_list.rb b/lib/bundler/source_list.rb
+index ac2adacb3d..37869878ce 100644
+--- a/lib/bundler/source_list.rb
++++ b/lib/bundler/source_list.rb
+@@ -64,6 +64,10 @@ def rubygems_sources
+       @rubygems_sources + [default_source]
+     end
+ 
++    def non_global_rubygems_sources
++      @rubygems_sources
++    end
++
+     def rubygems_remotes
+       rubygems_sources.map(&:remotes).flatten.uniq
+     end
