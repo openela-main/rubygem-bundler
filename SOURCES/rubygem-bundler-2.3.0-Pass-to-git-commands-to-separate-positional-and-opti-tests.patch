@@ -1,0 +1,41 @@
+From 903f0610116ae254383c9ef65ef2695f56a240f7 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?David=20Rodr=C3=ADguez?= <deivid.rodriguez@riseup.net>
+Date: Sat, 13 Nov 2021 11:18:54 +0100
+Subject: [PATCH] Pass "--" to git commands to separate positional and optional
+ args
+
+To make sure git uri's specified in Gemfile are never misinterpreted as
+optional arguments, potentially allowing for local code execution.
+---
+ spec/bundler/source/git/git_proxy_spec.rb | 20 ++++++++++++++++++++
+ 1 files changed, 20 insertions(+)
+
+diff --git a/spec/bundler/source/git/git_proxy_spec.rb b/spec/bundler/source/git/git_proxy_spec.rb
+index d282a449a5..fbe7ef8792 100644
+--- a/spec/bundler/source/git/git_proxy_spec.rb
++++ b/spec/bundler/source/git/git_proxy_spec.rb
+@@ -113,4 +113,24 @@ RSpec.describe Bundler::Source::Git::GitProxy do
+       end
+     end
+   end
++
++  it "doesn't allow arbitrary code execution through Gemfile uris with a leading dash" do
++    gemfile <<~G
++      gem "poc", git: "-u./pay:load.sh"
++    G
++
++    file = bundled_app("pay:load.sh")
++
++    create_file file, <<~RUBY
++      #!/bin/sh
++
++      touch #{bundled_app("canary")}
++    RUBY
++
++    FileUtils.chmod("+x", file)
++
++    bundle :lock, :raise_on_error => false
++
++    expect(Pathname.new(bundled_app("canary"))).not_to exist
++  end
+ end

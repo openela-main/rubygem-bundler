@@ -1,0 +1,31 @@
+From 903f0610116ae254383c9ef65ef2695f56a240f7 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?David=20Rodr=C3=ADguez?= <deivid.rodriguez@riseup.net>
+Date: Sat, 13 Nov 2021 11:18:54 +0100
+Subject: [PATCH] Pass "--" to git commands to separate positional and optional
+ args
+
+To make sure git uri's specified in Gemfile are never misinterpreted as
+optional arguments, potentially allowing for local code execution.
+---
+ lib/bundler/source/git/git_proxy.rb       |  4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/lib/bundler/source/git/git_proxy.rb b/lib/bundler/source/git/git_proxy.rb
+index c56dda66ea..a9f9b50e0b 100644
+--- a/lib/bundler/source/git/git_proxy.rb
++++ b/lib/bundler/source/git/git_proxy.rb
+@@ -100,12 +100,12 @@ module Bundler
+             SharedHelpers.filesystem_access(path.dirname) do |p|
+               FileUtils.mkdir_p(p)
+             end
+-            git_retry %(clone #{uri_escaped_with_configured_credentials} "#{path}" --bare --no-hardlinks --quiet)
++            git_retry %(clone --bare --no-hardlinks --quiet -- #{uri_escaped_with_configured_credentials} "#{path}")
+             return unless extra_ref
+           end
+ 
+           in_path do
+-            git_retry %(fetch --force --quiet --tags #{uri_escaped_with_configured_credentials} "refs/heads/*:refs/heads/*" #{extra_ref})
++            git_retry %(fetch --force --quiet --tags -- #{uri_escaped_with_configured_credentials} "refs/heads/*:refs/heads/*" #{extra_ref})
+           end
+         end
+ 

@@ -12,7 +12,7 @@
 
 Name: rubygem-%{gem_name}
 Version: 1.16.1
-Release: 4%{?dist}
+Release: 5%{?dist}
 Summary: Library and utilities to manage a Ruby application's gem dependencies
 Group: Development/Languages
 License: MIT
@@ -25,6 +25,10 @@ Source1: %{gem_name}-%{version}-specs.tgz
 # https://github.com/rubygems/rubygems/pull/5029
 Patch0: ruby-bundler-raise-error-in-dependency-confusion.patch
 Patch1: ruby-bundler-raise-error-in-dependency-confusion-tests.patch
+# Fix CVE-2021-43809: unexpected code execution in Gemfiles
+# https://github.com/rubygems/rubygems/pull/5142
+Patch2: rubygem-bundler-2.3.0-Pass-to-git-commands-to-separate-positional-and-opti.patch
+Patch3: rubygem-bundler-2.3.0-Pass-to-git-commands-to-separate-positional-and-opti-tests.patch
 # ruby package has just soft dependency on rubygem(io-console), while
 # Bundler always requires it.
 Requires: rubygem(io-console)
@@ -65,6 +69,7 @@ Documentation for %{name}.
 
 pushd .%{gem_instdir}
 %patch0 -p1
+%patch2 -p1
 popd
 
 %build
@@ -125,6 +130,7 @@ ruby -e '
 
 tar xzvf %{SOURCE1}
 cat %{PATCH1} | patch -p1
+cat %{PATCH3} | patch -p1
 
 # Re-create bundler.gemspec used in spec/spec_helper.rb to avoid unnecessary
 # git dependency.
@@ -199,6 +205,10 @@ popd
 %doc %{gem_instdir}/README.md
 
 %changelog
+* Fri Apr 25 2025 Vít Ondruch <vondruch@redhat.com> - 1.16.1-5
+- Fix unexpected code execution in Gemfiles (CVE-2021-43809)
+  Resolves: RHEL-87017
+
 * Mon Dec 13 2021 Jun Aruga <jaruga@redhat.com> - 1.16.1-4
 - Fix Bundler dependency confusion.
   Resolves: CVE-2020-36327
